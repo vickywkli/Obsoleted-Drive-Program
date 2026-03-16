@@ -1,0 +1,98 @@
+from __future__ import annotations
+import pandas as pd
+import numpy as np
+
+def summer_vs_other_summary(cb: pd.DataFrame, units: pd.DataFrame, year: int, summer_months):
+    """
+    Build per-contract ratios comparing SUMMER vs OTHER months only.
+
+    Returns columns:
+        ContractNo,
+        total freq summer vs other,
+        total time summer vs other,
+        drive freq summer vs other,
+        drive time summer vs other,
+        summer frequency, summer time,
+        other frequency,  other time
+    """
+    if cb.empty:
+        return pd.DataFrame(columns=["ContractNo"])
+
+    # Map UnitNo -> ContractNo (unique per unit)
+    units = units[["UnitNo","ContractNo"]].drop_duplicates("UnitNo")
+    units["UnitNo"] = units["UnitNo"].astype(str)
+
+    cb = cb.copy()
+    cb["UnitNo"] = cb["UnitNo"].astype(str)
+    cb = cb.merge(units, on="UnitNo", how="left")
+    cb = cb[cb["Callback Year"].eq(year)]
+
+    rows = []
+    for cno, sub in cb.groupby("ContractNo"):
+        # monthly aggregation
+        m = sub.groupby("Callback Month").agg(
+            Drive_Callback=("Drive Callback","sum"),
+            Drive_time=("Drive time","sum"),
+            Total_Callback=("Total Callback","sum"),
+            Callback_time=("Callback time","sum"),
+        )
+        m = m.reindex(range(1,13)).fillna(0)
+
+        summer_mask = m.index.isin(summer_months)
+        other_mask  = ~summer_mask
+
+        def safe_ratio(a, b):
+            return float(a) if b == 0 else float(a)/float(b)
+
+        # means per month group (keeps scale similar to your original)
+        s_tf = m.loc[summer_mask, "Total_Callback"].mean()
+        s_tt = m.loc[summer_mask, "Callback_time"].mean()
+        s_df = m.loc[summer_mask, "Drive_Callback"].mean()
+        s_dt = m.loc[summer_mask, "Drive_time"].mean()
+
+        o_tf = m.loc[other_mask, "Total_Callback"].mean()
+        o_tt = m.loc[other_mask, "Callback_time"].mean()
+        o_df = m.loc[other_mask, "Drive_Callback"].mean()
+        o_dt = m.loc[other_mask, "Drive_time"].mean()
+
+        rows.append({
+            "ContractNo": cno,
+            "total freq summer vs other": safe_ratio(s_tf, o_tf),
+            "total time summer vs other": safe_ratio(s_tt, o_tt),
+            "drive freq summer vs other": safe_ratio(s_df, o_df),
+            "drive time summer vs other": safe_ratio(s_dt, o_dt),
+            "summer frequency": s_tf,
+            "summer time": s_tt,
+            "other frequency": o_tf,
+            "other time": o_tt,
+        })
+    return pd.DataFrame(rows)
+
+
+def assign_breakdown(df: pd.DataFrame, summary: pd.DataFrame, rules: dict) -> pd.DataFrame:
+    """
+    Assign a single 'Breakdown type' based on SUMMER vs OTHER ratios only.
+    Priority order:
+        time other, time normal, freq other, freq normal — (removed winter variants)
+    But we only keep two labels now to avoid confusion:
+        'time other'  if total time summer vs other >= threshold
+        'freq other'  if total freq summer vs other >= threshold
+        otherwise 0
+    Also enforce a minimum absolute summer frequency (min_summer_freq).
+    """
+    if df.empty or summary.empty:
+        df["Breakdown type"] = 0
+        return df
+
+    out = df.merge(summary, on="ContractNo", how="left")
+    thr = float(rules.get("summer_vs_normal_threshold", 1.5))  # reuse same threshold
+    min_s = float(rules.get("min_summer_freq", 0.6))           # same floor
+
+    out["Breakdown type"] = 0
+    # First check time ratio, then frequency ratio
+    out.loc[out["total time summer vs other"] >= thr, "Breakdown type"] = "time other"
+    out.loc[(out["Breakdown type"].eq(0)) & (out["total freq summer vs other"] >= thr), "Breakdown type"] = "freq other"
+
+    # Enforce minimum summer activity; if too low, clear the tag
+    out.loc[out["summer frequency"] < min_s, "Breakdown type"] = 0
+    return out

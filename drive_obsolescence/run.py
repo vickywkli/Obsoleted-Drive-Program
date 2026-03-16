@@ -1,9 +1,16 @@
-python -m venv .venv
-# Windows:
-. .venv/Scripts/activate
-# macOS/Linux:
-# source .venv/bin/activate
+from __future__ import annotations
+import argparse
+from .settings import load_settings
+from .pipeline import run
 
-pip install pandas numpy python-docx openpyxl pyyaml num2words
-cp config/config.sample.yaml config/config.yaml
-python scripts/run.py --config config/config.yaml --year 2024
+def main():
+    p = argparse.ArgumentParser()
+    p.add_argument("--config", required=True)
+    p.add_argument("--year", type=int, default=2025)
+    args = p.parse_args()
+    settings = load_settings(args.config)
+    result = run(settings, args.year)
+    print("✅ Completed. Table:", result["table"])
+
+if __name__ == "__main__":
+    main()

@@ -1,0 +1,45 @@
+from __future__ import annotations
+from pathlib import Path
+from docx import Document
+from docx.shared import Pt, Inches
+
+def _margins(doc: Document, inches=0.5):
+    for s in doc.sections:
+        s.top_margin = Inches(inches)
+        s.bottom_margin = Inches(inches)
+        s.left_margin = Inches(inches)
+        s.right_margin = Inches(inches)
+
+def build_letter(r):
+    doc = Document(); _margins(doc)
+    sent = r.get("drive proposal date (format)","")
+    add1,add2,add3 = r.get("custadd1",""),r.get("custadd2",""),r.get("custadd3","")
+    doc.add_paragraph(f"{sent}\n\n{add1}\n{add2}\n{add3}")
+
+    qty = int(r.get("Drive Qty",0)); bname = r.get("BuildingName","")
+    header = doc.add_paragraph().add_run(
+        f"Replacement of Obsoleted Drive for {qty} Lift(s) at {bname}\n"
+        f"Contract {r.get('ContractNo','')} Unit {r.get('active unit list/contract','')}"
+    )
+    header.bold = True
+
+    body = doc.add_paragraph()
+    body.add_run("Your existing drive system is obsolete and parts are no longer available. ").font.size = Pt(10)
+    if r.get("Breakdown type",0) != 0:
+        body.add_run("Summer vs Other months callback analysis indicates elevated summer risk. ").font.size = Pt(10)
+
+    unit_rate = float(r.get("drive unit rate",0)); total = float(r.get("2025 drive total",0))
+    doc.add_paragraph(f"Subtotal per lift: HK$ {unit_rate:,.0f}\nTotal: HK$ {total:,.0f}").runs[0].font.size = Pt(10)
+
+    pay = r.get("paymenteng",""); reply = r.get("2025 reply date (format)","")
+    doc.add_paragraph(f"Payment Terms: {pay}\nLead Time: 3 months\nInstallation: 09:00–18:00 Mon–Fri\nPlease sign and return by {reply}.").runs[0].font.size = Pt(9)
+    return doc
+
+def export_letters(df, root: Path):
+    for _, r in df.iterrows():
+        if int(r.get("Drive Qty",0)) <= 0: continue
+        br = r.get("vBranchID","BR"); ab = r.get("Sales abbv","SA"); m = r.get("sent month","MON")
+        outdir = root/br/ab/m; outdir.mkdir(parents=True, exist_ok=True)
+        ref = r.get("RefNo", f"{ab}-{r.get('ContractNo','')}")
+        path = outdir/f"{ref}_{r.get('ContractNo','')}_drive.docx"
+        doc = build_letter(r); doc.save(path)

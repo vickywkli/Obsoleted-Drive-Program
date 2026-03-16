@@ -1,0 +1,74 @@
+from __future__ import annotations
+import numpy as np
+import pandas as pd
+
+from .settings import Settings
+from .io import load_units, load_customer_addresses, load_cycle_summary, load_callbacks
+from .mapping import compute_new_drive
+from .callbacks import summer_vs_other_summary, assign_breakdown
+from .scheduling import assign_dates
+from .outputs_excel import export_table
+from .outputs_docx import export_letters
+
+def run(settings: Settings, year: int = 2025):
+    # 1) Load inputs
+    units = load_units(settings)
+    cust  = load_customer_addresses(settings)
+    cycle = load_cycle_summary(settings)
+    cb    = load_callbacks(settings)
+
+    # 2) Inject branch contacts into rows
+    out = units.copy()
+    for br, info in settings.contacts.items():
+        mask = out["vBranchID"].eq(br)
+        out.loc[mask, "contact person"]     = info.person
+        out.loc[mask, "Chi_contact person"] = info.person_zh
+        out.loc[mask, "contact num"]        = info.phone
+        out.loc[mask, "Sales abbv"]         = info.sales_abbr
+
+    # 3) Map to new drive & compute costs
+    out = compute_new_drive(out, settings.rules)
+
+    # 4) Keep target contracts (dedupe by ContractNo after Drive Qty computed)
+    targets = (
+        out[out["Drive Qty"].gt(0)]
+        .sort_values(["ContractNo", "UnitNo"])
+        .drop_duplicates("ContractNo", keep="last")
+    )
+
+    # 5) Enrich with customer address & cycle (optional if available)
+    if not cust.empty:
+        keep_cols = ["CustomerId", "CustomerName", "custadd1", "custadd2", "custadd3", "custadd4"]
+        keep_cols = [c for c in keep_cols if c in cust.columns]
+        if keep_cols:
+            targets = targets.merge(cust[keep_cols], on="CustomerId", how="left")
+
+    if not cycle.empty and "cycle actual sent date" in cycle:
+        cycle["cycle actual sent date"] = pd.to_datetime(cycle["cycle actual sent date"], errors="coerce")
+        targets = targets.merge(cycle[["ContractNo","cycle actual sent date"]], on="ContractNo", how="left")
+
+    # 6) Seasonal analysis: SUMMER vs OTHER (no winter bucket)
+    summary = summer_vs_other_summary(
+        cb,
+        units[["UnitNo","ContractNo"]].drop_duplicates(),
+        year,
+        settings.rules.get("summer_months", [7, 8, 9])
+    )
+    targets = assign_breakdown(targets, summary, settings.rules)
+
+    # 7) Proposal & reply dates
+    targets = assign_dates(targets, settings.schedule)
+
+    # 8) RefNo numbering
+    targets = targets.reset_index(drop=True)
+    targets["Number"] = np.arange(1, len(targets) + 1)
+    targets["RefNo"]  = targets.apply(
+        lambda r: f"TPO{int(r['Number']):04d}_{r['vBranchID']}_{r['Sales abbv']}_25",
+        axis=1
+    )
+
+    # 9) Outputs
+    table_path = export_table(targets, settings)
+    export_letters(targets, settings.output_root)
+
+    return {"targets": targets, "table": str(table_path)}

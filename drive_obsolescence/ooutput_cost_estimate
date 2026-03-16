@@ -1,0 +1,13 @@
+from __future__ import annotations
+from pathlib import Path
+import pandas as pd
+from .settings import Settings
+
+def export_table(df, settings: Settings):
+    p = settings.output_root/"master"
+    p.mkdir(parents=True, exist_ok=True)
+    out = p/"drive_targets_master.xlsx"
+    df.to_excel(out, index=False)
+    return out
+``
+``
